@@ -48,7 +48,7 @@ def print_banner(mode: str, use_case: str) -> None:
     print("=" * 70)
     print(" Enterprise Agentic RAG — Interactive Shell")
     print(f" Mode: [{mode.upper()}]  |  Use-Case: [{use_case}]")
-    print(" Commands: /mode <rag|agent> | /usecase <name> | /exit")
+    print(" Commands: /mode <rag|agent> | /usecase <name> | /clear | /exit")
     print("=" * 70 + "\n")
 
 
@@ -81,6 +81,11 @@ def main() -> None:
         if user_input.lower() in {"/exit", "exit", "quit"}:
             print("Session ended.")
             break
+
+        if user_input.lower() in {"/clear", "clear"}:
+            agent.clear_history()
+            print("Conversation history cleared.\n")
+            continue
 
         if user_input.startswith("/mode"):
             parts = user_input.split()

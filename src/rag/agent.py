@@ -1,4 +1,4 @@
-"""Enterprise Agentic RAG Controller with tool use and router mode.
+"""Enterprise Agentic RAG Controller with tool use, router mode, and multi-turn memory.
 
 See docs/EXECUTION_PLAN.md Level 5.
 """
@@ -37,9 +37,11 @@ def get_router_system_instruction() -> str:
         "3. When the user asks about ANY document, policy, rules, coverage, limits, or "
         "architecture (even broadly or vaguely, such as 'tell me about the policy', "
         "'room rent rules', 'ICU limits'), YOU MUST CALL `search_use_case_kb`.\n"
-        "Translate vague queries into targeted search queries matching the catalog domain "
-        "(e.g. query='family health insurance hospitalization room rent limits').\n"
-        "4. When answering from retrieved context, cite every fact using [doc_id:chunk_index]. "
+        "4. Prior conversation turns are provided in the chat history. When the user asks a "
+        "follow-up question (e.g. using pronouns or references like 'what about for 5 days?', "
+        "'does it cover dental?'), resolve the subject from conversation history when "
+        "calling `search_use_case_kb`.\n"
+        "5. When answering from retrieved context, cite every fact using [doc_id:chunk_index]. "
         "If the context does not contain the answer, state that clearly without guessing."
     )
 
@@ -55,8 +57,10 @@ def get_agent_system_instruction() -> str:
         "1. Identify the relevant domain and call search_use_case_kb.\n"
         "2. If retrieved chunks are incomplete or context is cut off, call get_adjacent_chunks.\n"
         "3. If recall is low or empty, refine your query and search again.\n"
-        "4. Synthesize a grounded final response citing every fact using [doc_id:chunk_index].\n"
-        "5. If information is missing, state clearly what is missing without guessing."
+        "4. Prior conversation turns are provided in the chat history. Resolve follow-up pronouns "
+        "from context when formulating tool queries.\n"
+        "5. Synthesize a grounded final response citing every fact using [doc_id:chunk_index].\n"
+        "6. If information is missing, state clearly what is missing without guessing."
     )
 
 
@@ -72,7 +76,7 @@ class AgentResponse(BaseModel):
 
 
 class AgenticRAG:
-    """Agentic RAG controller supporting both simple router mode and multi-step agent mode."""
+    """Agentic RAG controller with multi-turn memory and automatic failover."""
 
     def __init__(
         self,
@@ -80,6 +84,7 @@ class AgenticRAG:
         tools: RAGTools | None = None,
         max_steps: int = 3,
         simple_router: bool = True,
+        max_history_turns: int = 5,
     ) -> None:
         self.settings = settings or RAGSettings()
         self.client = genai.Client(api_key=self.settings.gemini_api_key)
@@ -89,18 +94,54 @@ class AgenticRAG:
         set_default_tools(self.tools)
         self.simple_router: bool = simple_router
         self.max_steps: int = 1 if simple_router else max_steps
+        self.max_history_turns: int = max_history_turns
+        self.chat_history: list[tuple[str, str]] = []
 
-    def run(self, prompt: str) -> AgentResponse:
-        """Run the agent router or loop with automatic model fallback."""
+    def clear_history(self) -> None:
+        """Clear rolling multi-turn conversation memory."""
+        self.chat_history.clear()
+
+    def _build_initial_contents(self, prompt: str) -> list[types.Content]:
+        """Build message contents prepending clean (user_q, final_ans) history turns."""
+        contents: list[types.Content] = []
+        for user_q, model_ans in self.chat_history[-self.max_history_turns :]:
+            contents.append(
+                types.Content(role="user", parts=[types.Part.from_text(text=user_q)])
+            )
+            contents.append(
+                types.Content(role="model", parts=[types.Part.from_text(text=model_ans)])
+            )
+        contents.append(
+            types.Content(role="user", parts=[types.Part.from_text(text=prompt)])
+        )
+        return contents
+
+    def _record_turn(self, prompt: str, answer: str) -> None:
+        """Append Q&A pair to chat history bounded by max_history_turns."""
+        if answer.strip():
+            self.chat_history.append((prompt, answer))
+            if len(self.chat_history) > self.max_history_turns:
+                self.chat_history = self.chat_history[-self.max_history_turns :]
+
+    def run(
+        self,
+        prompt: str,
+        chat_history: list[tuple[str, str]] | None = None,
+    ) -> AgentResponse:
+        """Run the agent router or loop with automatic model fallback and history tracking."""
+        if chat_history is not None:
+            self.chat_history = list(chat_history[-self.max_history_turns :])
+
         runner = self._run_simple_router if self.simple_router else self._run_loop
         with logfire.span(
             "agentic_rag_run",
             prompt=prompt,
             simple_router=self.simple_router,
             max_steps=self.max_steps,
+            history_turns=len(self.chat_history),
         ):
             try:
-                return runner(prompt, model=self.primary_model, is_fallback=False)
+                resp = runner(prompt, model=self.primary_model, is_fallback=False)
             except errors.APIError as err:
                 if err.code not in RETRYABLE_STATUS_CODES:
                     raise
@@ -111,7 +152,7 @@ class AgenticRAG:
                     status_code=getattr(err, "code", None),
                     error=str(err),
                 )
-                return runner(prompt, model=self.fallback_model, is_fallback=True)
+                resp = runner(prompt, model=self.fallback_model, is_fallback=True)
             except (TimeoutError, ConnectionError) as err:
                 logfire.warn(
                     "Primary agent LLM failed; switching to fallback",
@@ -120,13 +161,14 @@ class AgenticRAG:
                     status_code=getattr(err, "code", None),
                     error=str(err),
                 )
-                return runner(prompt, model=self.fallback_model, is_fallback=True)
+                resp = runner(prompt, model=self.fallback_model, is_fallback=True)
+
+            self._record_turn(prompt, resp.answer)
+            return resp
 
     def _run_simple_router(self, prompt: str, model: str, is_fallback: bool) -> AgentResponse:
         """Simple router mode: chat directly OR make a single search_use_case_kb call."""
-        contents: list[types.Content] = [
-            types.Content(role="user", parts=[types.Part.from_text(text=prompt)])
-        ]
+        contents = self._build_initial_contents(prompt)
         tools_list = [search_use_case_kb]
         tool_map = {"search_use_case_kb": self.tools.search_use_case_kb}
         system_instruction = get_router_system_instruction()
@@ -208,9 +250,7 @@ class AgenticRAG:
 
     def _run_loop(self, prompt: str, model: str, is_fallback: bool) -> AgentResponse:
         """Multi-step agent loop with adjacent chunks and query refinement."""
-        contents: list[types.Content] = [
-            types.Content(role="user", parts=[types.Part.from_text(text=prompt)])
-        ]
+        contents = self._build_initial_contents(prompt)
         tools_list = [
             search_use_case_kb,
             list_available_use_cases,
