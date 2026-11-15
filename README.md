@@ -138,10 +138,10 @@ python scripts/chat.py --mode agent --use-case general
 Launch the production REST API server:
 
 ```bash
-uvicorn rag.api:app --app-dir src --host 0.0.0.0 --port 8000 --reload
+uvicorn rag.api:app --app-dir src --host 127.0.0.1 --port 8000 --reload
 ```
 
-Interactive OpenAPI docs will be available at: `http://localhost:8000/docs`
+Interactive OpenAPI docs will be available at: `http://localhost:8000/docs` (or `http://127.0.0.1:8000/docs`)
 
 **Core Endpoints**:
 - `POST /v1/chat`: Conversational multi-turn Agentic RAG with `session_id` isolation.
