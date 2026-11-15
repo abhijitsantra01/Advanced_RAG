@@ -23,6 +23,7 @@ class RAGSettings(BaseSettings):
     chunk_size: int = Field(default=800, gt=50)
     chunk_overlap: int = Field(default=150, ge=0)
     top_k: int = Field(default=5, gt=0)
+    score_threshold: float = Field(default=0.40, ge=0.0, le=1.0)
 
     @model_validator(mode="after")
     def validate_chunk_bounds(self) -> "RAGSettings":

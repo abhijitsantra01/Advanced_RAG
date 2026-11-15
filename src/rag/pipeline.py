@@ -6,6 +6,7 @@ from pathlib import Path
 
 import logfire
 
+from rag.catalog import load_catalog, record_catalog_entry
 from rag.chunker import FixedChunker
 from rag.config import RAGSettings
 from rag.embedder import EmbedderClient, EmbeddingFailoverRequired
@@ -58,6 +59,32 @@ class RAGPipeline:
                     doc_id=doc_id,
                     content_hash=content_hash,
                 )
+                content = load_document_text(file_path)
+                existing = {e.doc_id: e for e in load_catalog()}
+                chunk_count = (
+                    existing[doc_id].chunk_count
+                    if doc_id in existing
+                    else len(
+                        self.chunker.chunk_document(
+                            doc=Document(
+                                doc_id=doc_id,
+                                title=file_path.name,
+                                content=content,
+                                source_path=str(file_path),
+                                use_case=use_case,
+                                content_hash=content_hash,
+                            ),
+                            embedding_model=self.embedder.active_model,
+                        )
+                    )
+                )
+                record_catalog_entry(
+                    doc_id=doc_id,
+                    filename=file_path.name,
+                    use_case=use_case,
+                    chunk_count=chunk_count,
+                    preview=content[:300],
+                )
                 continue
 
             content = load_document_text(file_path)
@@ -76,6 +103,14 @@ class RAGPipeline:
             for chunk in chunks:
                 chunk.content_hash = content_hash
             all_chunks.extend(chunks)
+
+            record_catalog_entry(
+                doc_id=doc_id,
+                filename=file_path.name,
+                use_case=use_case,
+                chunk_count=len(chunks),
+                preview=content[:300],
+            )
 
         if not all_chunks:
             return 0
@@ -159,6 +194,14 @@ class RAGPipeline:
                     chunk.content_hash = content_hash
                 all_chunks.extend(chunks)
 
+                record_catalog_entry(
+                    doc_id=doc_id,
+                    filename=file_path.name,
+                    use_case="general",
+                    chunk_count=len(chunks),
+                    preview=content[:300],
+                )
+
             if all_chunks:
                 chunk_texts = [c.text for c in all_chunks]
                 embeddings = self.embedder.embed_texts(chunk_texts, task_type="RETRIEVAL_DOCUMENT")
@@ -178,7 +221,7 @@ class RAGPipeline:
         question: str,
         top_k: int = 5,
         use_case: str | None = "general",
-        score_threshold: float = 0.65,
+        score_threshold: float = 0.40,
     ) -> RAGResponse:
         """Answer a question using embedded retrieval from Qdrant and Gemini generation."""
         with logfire.span(

@@ -7,6 +7,7 @@ from google import genai
 from google.genai import errors, types
 from pydantic import BaseModel
 
+from rag.catalog import build_system_memory
 from rag.config import RAGSettings
 from rag.tools import (
     RAGTools,
@@ -16,29 +17,47 @@ from rag.tools import (
     set_default_tools,
 )
 
-ROUTER_SYSTEM_INSTRUCTION = (
-    "You are an enterprise knowledge assistant with access to `search_use_case_kb`.\n"
-    "- If the user says a greeting, pleasantry, or asks a general conversational question "
-    "(e.g. 'hi', 'who are you'), reply directly without calling any tools.\n"
-    "- If the user asks about ANY document, policy, rules, coverage, limits, or architecture, "
-    "YOU MUST CALL `search_use_case_kb(query=...)` to retrieve factual context.\n"
-    "- When answering from retrieved context, cite every fact using [doc_id:chunk_index]. "
-    "If the context does not contain the answer, state that clearly without guessing."
-)
-
-AGENT_SYSTEM_INSTRUCTION = (
-    "You are an autonomous enterprise knowledge assistant. You have access to tools to "
-    "search domain-specific knowledge bases, list available use-case domains, and fetch adjacent "
-    "context chunks.\n"
-    "When answering user queries:\n"
-    "1. Identify the relevant domain and call search_use_case_kb.\n"
-    "2. If retrieved chunks are incomplete or context is cut off, call get_adjacent_chunks.\n"
-    "3. If recall is low or empty, refine your query and search again.\n"
-    "4. Synthesize a grounded final response citing every fact using [doc_id:chunk_index].\n"
-    "5. If information is missing, state clearly what is missing without guessing."
-)
-
 RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
+
+
+def get_router_system_instruction() -> str:
+    """Build dynamic system instruction for router mode with active catalog memory."""
+    memory = build_system_memory()
+    return (
+        f"{memory}\n\n"
+        "### Assistant Router Directives:\n"
+        "You have access to the tool `search_use_case_kb` to retrieve context from the "
+        "enterprise knowledge base.\n"
+        "1. For greetings, pleasantries, or general conversational questions (e.g. 'hi', "
+        "'who are you'), reply politely and directly without calling any tools.\n"
+        "2. When the user asks broad questions about what you know, what policies or documents "
+        "are available, or how you can help (e.g. 'What documents do you have?',\n"
+        "'How can you help me?'), answer directly using the Active Knowledge Base Catalog and "
+        "Company Profile above WITHOUT calling any tools. Never invent unindexed topics.\n"
+        "3. When the user asks about ANY document, policy, rules, coverage, limits, or "
+        "architecture (even broadly or vaguely, such as 'tell me about the policy', "
+        "'room rent rules', 'ICU limits'), YOU MUST CALL `search_use_case_kb`.\n"
+        "Translate vague queries into targeted search queries matching the catalog domain "
+        "(e.g. query='family health insurance hospitalization room rent limits').\n"
+        "4. When answering from retrieved context, cite every fact using [doc_id:chunk_index]. "
+        "If the context does not contain the answer, state that clearly without guessing."
+    )
+
+
+def get_agent_system_instruction() -> str:
+    """Build dynamic system instruction for multi-step agent mode."""
+    memory = build_system_memory()
+    return (
+        f"{memory}\n\n"
+        "### Autonomous Agent Directives:\n"
+        "You have access to tools to search knowledge bases, list domains, "
+        "and fetch adjacent chunks.\n"
+        "1. Identify the relevant domain and call search_use_case_kb.\n"
+        "2. If retrieved chunks are incomplete or context is cut off, call get_adjacent_chunks.\n"
+        "3. If recall is low or empty, refine your query and search again.\n"
+        "4. Synthesize a grounded final response citing every fact using [doc_id:chunk_index].\n"
+        "5. If information is missing, state clearly what is missing without guessing."
+    )
 
 
 class AgentResponse(BaseModel):
@@ -110,6 +129,7 @@ class AgenticRAG:
         ]
         tools_list = [search_use_case_kb]
         tool_map = {"search_use_case_kb": self.tools.search_use_case_kb}
+        system_instruction = get_router_system_instruction()
 
         with logfire.span("agent_router_turn", model=model):
             response = self.client.models.generate_content(
@@ -117,13 +137,16 @@ class AgenticRAG:
                 contents=contents,
                 config=types.GenerateContentConfig(
                     tools=tools_list,
-                    system_instruction=ROUTER_SYSTEM_INSTRUCTION,
+                    system_instruction=system_instruction,
+                    automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                        disable=True
+                    ),
                 ),
             )
 
             function_calls = getattr(response, "function_calls", None) or []
             if not function_calls:
-                # Direct conversational response (0 tool calls)
+                # Direct conversational or catalog response (0 tool calls)
                 return AgentResponse(
                     query=prompt,
                     answer=response.text or "",
@@ -168,7 +191,10 @@ class AgenticRAG:
                     model=model,
                     contents=contents,
                     config=types.GenerateContentConfig(
-                        system_instruction=ROUTER_SYSTEM_INSTRUCTION,
+                        system_instruction=system_instruction,
+                        automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                            disable=True
+                        ),
                     ),
                 )
                 return AgentResponse(
@@ -195,6 +221,7 @@ class AgenticRAG:
             "list_available_use_cases": self.tools.list_available_use_cases,
             "get_adjacent_chunks": self.tools.get_adjacent_chunks,
         }
+        system_instruction = get_agent_system_instruction()
 
         tools_called: list[str] = []
         steps_taken = 0
@@ -207,7 +234,10 @@ class AgenticRAG:
                     contents=contents,
                     config=types.GenerateContentConfig(
                         tools=tools_list,
-                        system_instruction=AGENT_SYSTEM_INSTRUCTION,
+                        system_instruction=system_instruction,
+                        automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                            disable=True
+                        ),
                     ),
                 )
 
@@ -273,7 +303,10 @@ class AgenticRAG:
                             model=model,
                             contents=contents,
                             config=types.GenerateContentConfig(
-                                system_instruction=AGENT_SYSTEM_INSTRUCTION,
+                                system_instruction=system_instruction,
+                                automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                                    disable=True
+                                ),
                             ),
                         )
                         return AgentResponse(

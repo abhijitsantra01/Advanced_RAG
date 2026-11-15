@@ -38,8 +38,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--score-threshold",
         type=float,
-        default=0.65,
-        help="Cosine similarity score threshold for RAG retrieval (default: 0.65).",
+        default=0.40,
+        help="Cosine similarity score threshold for RAG retrieval (default: 0.40).",
     )
     return parser.parse_args()
 

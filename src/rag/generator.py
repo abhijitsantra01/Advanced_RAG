@@ -6,15 +6,23 @@ import logfire
 from google import genai
 from google.genai import errors, types
 
+from rag.catalog import build_system_memory
 from rag.config import RAGSettings
 from rag.schemas import RetrievalResult
 
-SYSTEM_INSTRUCTION = (
-    "You are a precise enterprise knowledge assistant. Answer the user's question using "
-    "ONLY the provided context chunks. Cite every fact using [doc_id:chunk_index]. "
-    "If the context does not contain sufficient information to answer the question, "
-    "state clearly what is missing without guessing."
-)
+
+def get_generator_system_instruction() -> str:
+    """Build dynamic system instruction for generator with active catalog memory."""
+    memory = build_system_memory()
+    return (
+        f"{memory}\n\n"
+        "### Grounded Answer Directives:\n"
+        "You are a precise enterprise knowledge assistant. Answer the user's question using "
+        "ONLY the provided context chunks. Cite every fact using [doc_id:chunk_index]. "
+        "If the context does not contain sufficient information to answer the question, "
+        "state clearly what is missing without guessing."
+    )
+
 
 RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 
@@ -34,7 +42,7 @@ class GeneratorClient:
             model=model,
             contents=prompt,
             config=types.GenerateContentConfig(
-                system_instruction=SYSTEM_INSTRUCTION,
+                system_instruction=get_generator_system_instruction(),
             ),
         )
         return response.text or ""

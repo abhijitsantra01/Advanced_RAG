@@ -30,6 +30,7 @@ class RAGTools:
         query: str,
         use_case: str = "general",
         top_k: int = 5,
+        score_threshold: float | None = 0.40,
     ) -> list[dict[str, Any]]:
         """Search enterprise knowledge base within a use_case namespace (default: 'general')."""
         with logfire.span(
@@ -37,6 +38,7 @@ class RAGTools:
             query=query,
             use_case=use_case,
             top_k=top_k,
+            score_threshold=score_threshold,
         ):
             query_embeddings = self.embedder.embed_texts([query], task_type="RETRIEVAL_QUERY")
             query_vector = query_embeddings[0]
@@ -45,6 +47,7 @@ class RAGTools:
                 query_vector=query_vector,
                 top_k=top_k,
                 use_case=use_case,
+                score_threshold=score_threshold,
             )
 
             return [
@@ -148,9 +151,15 @@ def search_use_case_kb(
     query: str,
     use_case: str = "general",
     top_k: int = 5,
+    score_threshold: float | None = 0.40,
 ) -> list[dict[str, Any]]:
     """Search enterprise knowledge base within a use_case namespace (default: 'general')."""
-    return get_default_tools().search_use_case_kb(query=query, use_case=use_case, top_k=top_k)
+    return get_default_tools().search_use_case_kb(
+        query=query,
+        use_case=use_case,
+        top_k=top_k,
+        score_threshold=score_threshold,
+    )
 
 
 def list_available_use_cases() -> list[str]:

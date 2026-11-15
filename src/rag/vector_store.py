@@ -151,7 +151,7 @@ class QdrantStore:
         query_vector: list[float],
         top_k: int = 5,
         use_case: str | None = None,
-        score_threshold: float | None = 0.65,
+        score_threshold: float | None = 0.40,
         target_collection: str | None = None,
     ) -> list[RetrievalResult]:
         """Search top_k most similar chunks with use_case filter and score_threshold."""
