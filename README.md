@@ -134,7 +134,23 @@ python scripts/chat.py --mode agent --use-case general
 - `/usecase <name>`: Switch the active use-case namespace (e.g., `/usecase technical`).
 - `/exit`: Exit the chat session.
 
-### 3. Run Live Sanity Check
+### 3. Run FastAPI REST Service
+Launch the production REST API server:
+
+```bash
+uvicorn rag.api:app --app-dir src --host 0.0.0.0 --port 8000 --reload
+```
+
+Interactive OpenAPI docs will be available at: `http://localhost:8000/docs`
+
+**Core Endpoints**:
+- `POST /v1/chat`: Conversational multi-turn Agentic RAG with `session_id` isolation.
+- `POST /v1/query`: Single-turn deterministic RAG query.
+- `GET /v1/catalog`: Retrieve active document catalog and company scope.
+- `POST /v1/ingest`: Trigger background folder re-sync with SHA-256 deduplication.
+- `GET /healthz`: Production readiness probe checking Qdrant Cloud connectivity.
+
+### 4. Run Live Sanity Check
 Verify your live connection to Gemini, Qdrant Cloud, and Logfire:
 
 ```bash
@@ -145,7 +161,7 @@ python scripts/smoke_test_live.py
 
 ## Testing & Code Quality
 
-The project features full mock unit test coverage (34 tests) validating chunking overlap, Level 2 generator fallback, Level 3 embedding failover with blue-green alias swapping, PDF page-number preservation, use-case isolation, SHA-256 deduplication, and agent function calling.
+The project features comprehensive unit test coverage (45 tests) validating chunking overlap, Level 2 generator fallback, Level 3 embedding failover with blue-green alias swapping, PDF page-number preservation, use-case isolation, SHA-256 deduplication, agent function calling, catalog system memory, and FastAPI REST endpoints.
 
 ```bash
 # Run the complete test suite
