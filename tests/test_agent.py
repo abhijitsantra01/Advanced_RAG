@@ -227,3 +227,61 @@ def test_agent_fallback_on_429() -> None:
         assert res.model_used == "gemini-3.1-flash-lite"
         assert res.fallback_triggered is True
         assert res.answer == "Fallback model answered directly."
+
+
+def test_agent_multi_turn_history_preservation_and_cap() -> None:
+    settings = RAGSettings(
+        gemini_api_key="test-key",
+        primary_llm_model="gemini-3.5-flash-lite",
+    )
+
+    with patch("rag.agent.genai.Client") as mock_genai_cls:
+        mock_client = MagicMock()
+        mock_genai_cls.return_value = mock_client
+
+        mock_tools = MagicMock(spec=RAGTools)
+        agent = AgenticRAG(
+            settings=settings,
+            tools=mock_tools,
+            simple_router=True,
+            max_history_turns=5,
+        )
+
+        # Turn 1
+        resp1 = _make_mock_text_response("ICU expenses are covered at actuals.")
+        mock_client.models.generate_content.return_value = resp1
+        res1 = agent.run("What are the ICU limits?")
+        assert res1.answer == "ICU expenses are covered at actuals."
+        assert len(agent.chat_history) == 1
+
+        # Turn 2: Follow-up question
+        resp2 = _make_mock_text_response("For 5 days, ICU stays remain covered at actuals.")
+        mock_client.models.generate_content.return_value = resp2
+        res2 = agent.run("What about for 5 days?")
+        assert res2.answer == "For 5 days, ICU stays remain covered at actuals."
+        assert len(agent.chat_history) == 2
+
+        # Verify that Turn 2's request contents included Turn 1 user query and model answer
+        call_kwargs = mock_client.models.generate_content.call_args.kwargs
+        sent_contents = call_kwargs["contents"]
+        assert len(sent_contents) == 3  # (user turn 1, model turn 1, user turn 2)
+        assert sent_contents[0].parts[0].text == "What are the ICU limits?"
+        assert sent_contents[1].parts[0].text == "ICU expenses are covered at actuals."
+        assert sent_contents[2].parts[0].text == "What about for 5 days?"
+
+        # Verify capping at max_history_turns=5
+        for i in range(3, 8):
+            mock_client.models.generate_content.return_value = _make_mock_text_response(
+                f"Answer {i}"
+            )
+            agent.run(f"Question {i}")
+
+        assert len(agent.chat_history) == 5
+        # The oldest turn ("What are the ICU limits?") should have been shifted out
+        assert agent.chat_history[0][0] == "Question 3"
+        assert agent.chat_history[-1][0] == "Question 7"
+
+        # Verify clear_history()
+        agent.clear_history()
+        assert len(agent.chat_history) == 0
+
